@@ -1,4 +1,4 @@
-all: client line_controller module
+all: client line_controller module device
 
-%.o : %.c
-	gcc -c $< -o $@
+% : %.c
+        gcc $< -lczmq -lzmq -o $@
