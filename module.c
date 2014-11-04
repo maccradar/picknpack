@@ -15,7 +15,7 @@
 
 static zsock_t *
 s_module_socket (char *name) {
-    zsock_t *module = zsock_new_router("tcp://*:5556"); // TODO: this should be configured
+    zsock_t *module = zsock_new_dealer("tcp://localhost:5556"); // TODO: this should be configured
 
     //  Tell Line Controller we're ready for work
     printf ("[Module %s] socket ready\n", name);

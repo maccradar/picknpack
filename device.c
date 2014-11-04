@@ -197,7 +197,7 @@ static void module_actor(zsock_t *pipe, void *args)
              return;
     } else
 	heartbeat(module,msg);
-    */    
+       
     configuring(module);        
     while(!zsys_interrupted) {
 	/*msg = poll(module);

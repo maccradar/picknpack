@@ -98,7 +98,7 @@ s_modules_purge (zlist_t *modules)
 int main (void)
 {
     zsock_t *frontend = zsock_new_router ("tcp://*:5555");  //  TODO: this should be configured
-    zsock_t *backend = zsock_new_dealer ("tcp://localhost:5556");   //  TODO: this should be configured
+    zsock_t *backend = zsock_new_router ("tcp://*:5556");   //  TODO: this should be configured
 
     //  List of available modules
     zlist_t *modules = zlist_new ();
