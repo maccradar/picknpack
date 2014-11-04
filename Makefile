@@ -1,4 +1,4 @@
-all: client line_controller module device
+all: client plant line module device
 
 % : %.c
 	gcc $< -lczmq -lzmq -o $@

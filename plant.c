@@ -97,8 +97,8 @@ s_modules_purge (zlist_t *modules)
 
 int main (void)
 {
-    zsock_t *frontend = zsock_new_router ("tcp://*:5555");  //  TODO: this should be configured
-    zsock_t *backend = zsock_new_router ("tcp://*:5556");   //  TODO: this should be configured
+    zsock_t *frontend = zsock_new_router ("tcp://*:5554");  //  TODO: this should be configured
+    zsock_t *backend = zsock_new_router ("tcp://*:5555");   //  TODO: this should be configured
 
     //  List of available modules
     zlist_t *modules = zlist_new ();
@@ -106,7 +106,7 @@ int main (void)
     //  Send out heartbeats at regular intervals
     uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
     
-    printf("I: Line Controller started\n");
+    printf("I: Plant started\n");
     while (!zsys_interrupted) {
         zmq_pollitem_t items [] = {
             { zsock_resolve(backend),  0, ZMQ_POLLIN, 0 },
@@ -164,7 +164,7 @@ int main (void)
                              ZFRAME_REUSE + ZFRAME_MORE);
                 zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
                 zframe_send (&frame, backend, 0);
-		printf("I: Sent heartbeat to module %s\n", module->id_string);
+		printf("I: Sent heartbeat to line %s\n", module->id_string);
                 module = (module_t *) zlist_next (modules);
             }
 	    
