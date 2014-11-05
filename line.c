@@ -158,7 +158,7 @@ int main (void)
                 break;          //  Interrupted
             zframe_t *identity = s_modules_next (modules); 
             zmsg_prepend (msg, &identity);
-            zmsg_send (&msg, backend);
+            //zmsg_send (&msg, backend);
         }
         //  .split handle heartbeating
         //  We handle heartbeating after any socket activity. First, we send
@@ -174,6 +174,9 @@ int main (void)
 		printf("I: Sent heartbeat to module %s\n", module->id_string);
                 module = (module_t *) zlist_next (modules);
             }
+	    // Send heartbeat to frontend
+	    zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
+            zframe_send (&frame, frontend, 0);
 	    
             heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
         }
