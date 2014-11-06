@@ -249,7 +249,6 @@ int running(resource_t *self) {//  List of available modules
     return 0;
 }
 
-
 int pausing(resource_t *self) {
     printf("[%s] pausing...", self->name);
     printf("done.\n");
