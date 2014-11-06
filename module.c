@@ -10,21 +10,6 @@
 #define PPP_READY       "\001"      //  Signals module is ready
 #define PPP_HEARTBEAT   "\002"      //  Signals module heartbeat
 
-//  Helper function that returns a new configured socket
-//  connected to the Paranoid Pirate queue
-
-static zsock_t *
-s_module_socket (char *name) {
-    zsock_t *module = zsock_new_dealer("tcp://localhost:5556"); // TODO: this should be configured
-
-    //  Tell Line Controller we're ready for work
-    printf ("[Module %s] socket ready\n", name);
-    zframe_t *frame = zframe_new (PPP_READY, 1);
-    zframe_send (&frame, module, 0);
-
-    return module;
-}
-
 typedef struct {
     char *name;
     zsock_t *frontend; // socket to frontend process, e.g. line controller
@@ -39,11 +24,25 @@ module_t* creating(zsock_t *pipe, char *name) {
     printf("[Module %s] creating...", name);
     module_t *self = (module_t *) zmalloc (sizeof (module_t));
     self->name = name;
-    self->frontend = s_module_socket(name);
+    self->frontend = zsock_new_dealer("tcp://localhost:9002"); // TODO: this should be configured
     self->backend = NULL;
     self->pipe = pipe;
     printf("done.\n");
     return self;
+}
+
+int initializing(module_t* self) {
+    printf("[Module %s] starting...", self->name);
+    // send signal on pipe socket to acknowledge initialisation
+    zsock_signal (self->pipe, 0);
+
+    //  Tell frontend we're ready for work
+    zframe_t *frame = zframe_new (PPP_READY, 1);
+    zframe_send (&frame, self->frontend, 0);
+    printf("done.\n");
+
+    return 0;
+
 }
 
 int configuring (module_t* self) {
@@ -61,16 +60,6 @@ int configuring (module_t* self) {
 
     return 0;
 };
-
-int initializing(module_t* self) {
-    printf("[Module %s] starting...", self->name);
-    // send signal on pipe socket to acknowledge initialisation
-    zsock_signal (self->pipe, 0);
-    printf("done.\n");
-
-    return 0;
-
-}
 
 int running(module_t* self) {
     zmq_pollitem_t items [] = { { zsock_resolve(self->frontend),  0, ZMQ_POLLIN, 0 } };
@@ -94,24 +83,25 @@ int running(module_t* self) {
             sleep (1);              //  Do some heavy work
             if (zsys_interrupted)
                 return -1;
-            }
-            else
-            //  .split handle heartbeats
-            //  When we get a heartbeat message from the queue, it means the
-            //  queue was (recently) alive, so we must reset our liveness
-            //  indicator:
-            if (zmsg_size (msg) == 1) {
-                zframe_t *frame = zmsg_first (msg);
-                if (memcmp (zframe_data (frame), PPP_HEARTBEAT, 1) == 0)
-                    self->liveness = HEARTBEAT_LIVENESS;
-                else {
-                    printf ("E: invalid message\n");
-                    zmsg_dump (msg);
-                }
-                zmsg_destroy (&msg);
-            }
-            else {
-                printf ("E: invalid message\n");
+		}
+		else
+		//  .split handle heartbeats
+		//  When we get a heartbeat message from the queue, it means the
+		//  queue was (recently) alive, so we must reset our liveness
+		//  indicator:
+		if (zmsg_size (msg) == 1) {
+			zframe_t *frame = zmsg_first (msg);
+			if (memcmp (zframe_data (frame), PPP_HEARTBEAT, 1) == 0) {
+				printf("[%s] RX HB FRONTEND\n", self->name);
+				self->liveness = HEARTBEAT_LIVENESS;
+			} else {
+				printf ("E: invalid message\n");
+				zmsg_dump (msg);
+			}
+			zmsg_destroy (&msg);
+		}
+		else {
+			printf ("E: invalid message\n");
                 zmsg_dump (msg);
             }
             self->interval = INTERVAL_INIT;
@@ -122,20 +112,20 @@ int running(module_t* self) {
         //  socket and reconnect. This is the simplest most brutal way of
         //  discarding any messages we might have sent in the meantime:
         if (--self->liveness == 0) {
-            printf ("[Module %s] heartbeat failure, can't reach frontend\n", self->name);
-            printf ("[Module %s] reconnecting in %zd msec...\n", self->name, self->interval);
+            printf ("[%s] heartbeat failure, can't reach frontend\n", self->name);
+            printf ("[%s] reconnecting in %zd msec...\n", self->name, self->interval);
             zclock_sleep (self->interval);
 
             if (self->interval < INTERVAL_MAX)
                 self->interval *= 2;
             zsock_destroy(&self->frontend);
-            self->frontend = s_module_socket (self->name);
+            self->frontend = zsock_new_dealer("tcp://localhost:9002"); // TODO: this should be configured.
             self->liveness = HEARTBEAT_LIVENESS;
         }
         //  Send heartbeat to queue if it's time
         if (zclock_time () > self->heartbeat_at) {
             self->heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
-            printf ("[Module %s] frontend heartbeat\n", self->name);
+            printf ("[%s] TX HB FRONTEND\n", self->name);
             zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
             zframe_send (&frame, self->frontend, 0);
         }

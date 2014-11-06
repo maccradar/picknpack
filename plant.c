@@ -97,8 +97,9 @@ s_lines_purge (zlist_t *lines)
 
 int main (void)
 {
-    zsock_t *frontend = zsock_new_router ("tcp://*:5554");  //  TODO: this should be configured
-    zsock_t *backend = zsock_new_router ("tcp://*:5555");   //  TODO: this should be configured
+	char* name = "PnP Plant";
+    zsock_t *frontend = zsock_new_router ("tcp://*:9000");  //  TODO: this should be configured
+    zsock_t *backend = zsock_new_router ("tcp://*:9001");   //  TODO: this should be configured
 
     //  List of available lines
     zlist_t *lines = zlist_new ();
@@ -106,7 +107,7 @@ int main (void)
     //  Send out heartbeats at regular intervals
     uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
     
-    printf("I: Plant started\n");
+    printf("[%s] started\n", name);
     while (!zsys_interrupted) {
         zmq_pollitem_t items [] = {
             { zsock_resolve(backend),  0, ZMQ_POLLIN, 0 },
@@ -138,6 +139,8 @@ int main (void)
                 &&  memcmp (zframe_data (frame), PPP_HEARTBEAT, 1)) {
                     printf ("E: invalid message from line\n");
                     zmsg_dump (msg);
+                } else {
+                	printf("[%s] RX HB BACKEND %s\n", name, line->id_string);
                 }
                 zmsg_destroy (&msg);
             }
@@ -164,7 +167,7 @@ int main (void)
                              ZFRAME_REUSE + ZFRAME_MORE);
                 zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
                 zframe_send (&frame, backend, 0);
-		printf("I: Sent heartbeat to line %s\n", line->id_string);
+                printf("[%s] TX HB BACKEND %s\n", name, line->id_string);
                 line = (line_t *) zlist_next (lines);
             }
 	    
