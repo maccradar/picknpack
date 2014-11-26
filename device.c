@@ -1,6 +1,6 @@
 //  Pick-n-Pack Device, based on ZeroMQ's Paranoid Pirate worker
-
 #include "czmq.h"
+
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
 #define HEARTBEAT_INTERVAL  1000    //  msecs
 #define INTERVAL_INIT       1000    //  Initial reconnect
@@ -13,19 +13,45 @@
 #define STACK_MAX 5 // maximum size of transition stack, e.g. running->configuring->initialising->finalising->pausing when configuring cannot proceed without reinit
 #define PAYLOAD_MAX 10 // maximum number of payload items in a single transition. E.g. change 10 configuration parameters.
 
+typedef enum states{
+	STATE_CREATING,
+	STATE_INITIALIZING,
+	STATE_CONFIGURING,
+	STATE_RUNNING,
+	STATE_PAUSING,
+	STATE_FINALIZING,
+	STATE_DELETING,
+	NUM_STATES,
+	NO_STATE
+}state;
+
+typedef enum signals{
+	SIGNAL_RUN,
+	SIGNAL_PAUSE,
+	SIGNAL_STOP,
+	SIGNAL_CONFIGURE,
+	SIGNAL_REBOOT,
+  	NUM_SIGNALS
+}signl;
+
+state transitions[NUM_STATES][NUM_SIGNALS] = {
+						 		/*SIGNAL_RUN		SIGNAL_PAUSE        SIGNAL_STOP      	SIGNAL_CONFIGURE 	SIGNAL_REBOOT */
+	/*STATE_CREATING*/     	{  	STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING},
+	/*STATE_INITIALIZING*/ 	{  	STATE_CONFIGURING,  STATE_CONFIGURING,  STATE_CONFIGURING,	STATE_CONFIGURING,	NO_STATE},
+	/*STATE_CONFIGURING*/  	{  	STATE_RUNNING,      STATE_PAUSING,    	STATE_PAUSING,    	NO_STATE,  			STATE_PAUSING},
+	/*STATE_RUNNING*/      	{  	NO_STATE,			STATE_PAUSING,    	STATE_PAUSING,      STATE_CONFIGURING,  STATE_PAUSING},
+	/*STATE_PAUSING*/      	{  	STATE_RUNNING,      NO_STATE,    		STATE_FINALIZING,   STATE_CONFIGURING,  STATE_FINALIZING},
+	/*STATE_FINALIZING*/   	{  	STATE_INITIALIZING, STATE_INITIALIZING,	STATE_DELETING,     STATE_INITIALIZING, STATE_INITIALIZING},
+	/*STATE_DELETING*/     	{  	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE}
+};
+
+
 //  Helper function that returns a new configured socket
 //  connected to the Paranoid Pirate queue
-
-typedef enum {
-    PIPE,
-	NAME
-}creating_state_parameters;
-
 
 static zsock_t *
 s_device_socket (char *name, char *link) {
     zsock_t *device = zsock_new_dealer(link); // TODO: this should be configured
-
     //  Tell Line Controller we're ready for work
     printf ("[%s] socket ready", name);
     zframe_t *frame = zframe_new (PPP_READY, 1);
@@ -56,10 +82,9 @@ typedef struct{
 	unsigned int size;//number of payload items
 }payload;
 
-typedef int (*state_fnc)(resource_t* self, payload *payload);
 
 typedef struct{
-	state_fnc state;
+	state state;
 	payload *payload;
 } transition;
 
@@ -93,13 +118,14 @@ typedef struct {
     unsigned int size;
 } transition_stack;
 
+
 static void transition_stack_init(transition_stack *S){
     S->size = 0;
 }
 
 static transition *transition_stack_top(transition_stack *S){
     if (S->size == 0) {
-        fprintf(stderr, "Error: stack empty\n");
+        //fprintf(stderr, "Error: stack empty\n");
         return NULL;
     }
     return (S->transitions[S->size-1]);
@@ -121,6 +147,10 @@ static void transition_stack_pop(transition_stack *S){
     }
 }
 
+typedef int (*state_fnc)(resource_t* self, payload *payload);
+
+
+
 int creating_fnc(resource_t* self, payload *payload);
 int initializing_fnc(resource_t* self, payload *payload);
 int configuring_fnc(resource_t* self, payload *payload);
@@ -128,6 +158,16 @@ int running_fnc(resource_t* self, payload *payload);
 int pausing_fnc(resource_t* self, payload *payload);
 int finalizing_fnc(resource_t* self, payload *payload);
 int deleting_fnc(resource_t* self, payload *payload);
+
+state_fnc state_functions[NUM_STATES] = {
+	/*STATE_CREATING*/     	 	creating_fnc,
+	/*STATE_INITIALIZING*/ 	 	initializing_fnc,
+	/*STATE_CONFIGURING*/  		configuring_fnc,
+	/*STATE_RUNNING*/      	 	running_fnc,
+	/*STATE_PAUSING*/      	 	pausing_fnc,
+	/*STATE_FINALIZING*/   	 	finalizing_fnc,
+	/*STATE_DELETING*/     	 	deleting_fnc
+};
 
 
 resource_t* creating(resource_t *self, zsock_t *pipe, char *name) {
@@ -232,7 +272,6 @@ int running(resource_t* self) {
 		zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
 		zframe_send (&frame, self->frontend, 0);
 	}
-
 	return 0;
 }
 
@@ -305,62 +344,93 @@ int deleting_fnc(resource_t* self, payload *payload) {
 	return deleting(self);
 }
 
+static void generate_stack(transition_stack *s, state state, signl signal){
+	transition_stack t;
+	transition_stack_init(&t);
+
+	transition *temp;
+
+	//get first transition to the next state
+	state = transitions[state][signal];
+
+	//use transition table to generate path from initial state to state where signal leads to 'NO_STATE'.
+	while(state != NO_STATE){
+		printf("%d \n", state);
+		temp = new_transition();
+		temp->state = state;
+		temp->payload = new_payload();
+		transition_stack_push(&t,temp);
+		state = transitions[state][signal];
+	}
+
+	//reverse to path to make it suitable for the stack.
+	temp = transition_stack_top(&t);
+	while(temp != NULL){
+		transition_stack_pop(&t);
+		transition_stack_push(s,temp);
+		temp = transition_stack_top(&t);
+	}
+}
+
 static void device_actor(zsock_t *pipe, void *args){
     char* name = (char*) args;
     printf("[%s] actor started.\n", name);
 
-    /* Go to running state by default */
     resource_t *self = (resource_t *) zmalloc (sizeof (resource_t));
 
     transition_stack s;
     transition_stack_init(&s);
 
-    transition *running = new_transition();
-    running->state = running_fnc;
-    running->payload = new_payload();
-    transition_stack_push(&s,running);
+    //setup initial conditions
+    state initial_state = STATE_CREATING;
+    signl initial_signal = SIGNAL_RUN;
 
-    transition *configuring = new_transition();
-    configuring->state=configuring_fnc;
-    configuring->payload = new_payload();
-    transition_stack_push(&s,configuring);
-
-    transition *initializing = new_transition();
-    initializing->state=initializing_fnc;
-    initializing->payload = new_payload();
-    transition_stack_push(&s,initializing);
-
-    transition *creating = new_transition();
-    creating->state = creating_fnc;
-    creating->payload = malloc(sizeof(payload));
+    //move to initial state
+    //NOTE: use of initial_state as variables questionable
+    transition *t = new_transition();
+    t->state = initial_state;
+    t->payload = malloc(sizeof(payload));
     char* names[] = {"pipe","name"};
     void* values[] = {pipe,name};
+    payload_init(t->payload,names,values,2);
 
-    payload_init(creating->payload,names,values,2);
-    transition_stack_push(&s,creating);
+    //generate path for initial state and signal
+    generate_stack(&s,initial_state,initial_signal);
+    transition_stack_push(&s,t);//add transition to initial state last, since we have a stack
 
     transition *transition = transition_stack_top(&s);
     while(transition != NULL){
-    	transition_stack_pop(&s);
-    	int result = transition->state(self,transition->payload);
+    	transition_stack_pop(&s);//remove transition from stack
+
+    	//act
+    	int result = state_functions[transition->state](self,transition->payload);
     	if(result < 0){
-    		//Invoke stopping command
+    		break;//TODO::invoke stopping signal
     	}
+    	free(transition);
+
+    	//TODO:: check communication lines for signals
+
+    	//get next state
     	transition = transition_stack_top(&s);
     }
+
+
+
     printf("[%s] actor stopped.\n", name);
 }
 
-    
+
 /* main */
 int main(int argc, char** args)
 {
     char* name = NULL;
-    if(argc > 1)
+    if(argc > 1){
         name = args[1];
-    else 
+    }else{
         name = "PnP Device";
-    assert(name);
+    }
+	assert(name);
 
     // incoming data is handled by the actor thread
     zactor_t *actor = zactor_new (device_actor, (void*)name);
