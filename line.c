@@ -1,5 +1,6 @@
 //  Pick-n-Pack Line, based on ZeroMQ's Paranoid Pirate worker
 #include "czmq.h"
+#include "defs.h"
 
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
 #define HEARTBEAT_INTERVAL  1000    //  msecs
@@ -7,7 +8,7 @@
 #define INTERVAL_MAX       32000    //  After exponential backoff
 
 //  Pick-n-Pack Protocol constants for signalling
-#define PPP_READY       "\001"      //  Signals device is ready
+//#define PPP_READY       "\001"      //  Signals device is ready
 #define PPP_HEARTBEAT   "\002"      //  Signals device heartbeat
 
 #define STACK_MAX 5 // maximum size of transition stack, e.g. running->configuring->initialising->finalising->pausing when configuring cannot proceed without reinit
@@ -137,7 +138,7 @@ typedef struct {
     size_t interval; // interval defines at what interval heartbeats are sent
     uint64_t heartbeat_at; // heartbeat_at defines when to send next heartbeat
     zlist_t *backend_resources;
-    char* required_resources = {"QAS", "PRINTER"};
+    zlist_t *required_resources;
 } resource_t;
 
 typedef struct {
@@ -244,6 +245,7 @@ resource_t* creating(resource_t *self, zsock_t *pipe, char *name) {
     self->backend =  zsock_new_router ("tcp://*:9002"); // TODO: this should be configured
     self->pipe = pipe;
     self->backend_resources = zlist_new ();
+    self->required_resources = zlist_new();
     printf("...done.\n");
     return self;
 }
@@ -252,8 +254,9 @@ int initializing(resource_t* self) {
     printf("[%s] initializing...", self->name);
     // send signal on pipe socket to acknowledge initialization
     zsock_signal (self->pipe, 0);
-
-    zframe_t *frame = zframe_new (PPP_READY, 1);
+    zlist_push(self->required_resources, PNP_QAS);
+    zlist_push(self->required_resources, PNP_PRINTING);
+    zframe_t *frame = zframe_new (READY, 1);
     zframe_send (&frame, self->frontend, 0);
 
     printf("done.\n");
@@ -275,7 +278,7 @@ int configuring (resource_t* self) {
     return 0;
 }
 
-int running(resource_t *self) {//  List of available backend_resources
+int running(resource_t *self) {
     //  Send out heartbeats at regular intervals
     uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
 
@@ -292,7 +295,7 @@ int running(resource_t *self) {//  List of available backend_resources
 	}
 	//  Handle backend_resource activity on backend
 	if (items [0].revents & ZMQ_POLLIN) {
-		//  Use backend_resource identity for load-balancing
+		//  Use backend_resource identity for identify resource location
 		zmsg_t *msg = zmsg_recv (self->backend);
 		if (!msg)
 			return -1;          //  Interrupted
@@ -303,13 +306,12 @@ int running(resource_t *self) {//  List of available backend_resources
 		s_backend_resource_ready (backend_resource, self->backend_resources);
 
 		//  Validate control message, or return reply to client
-		if (zmsg_size (msg) == 1) {
+		if (zmsg_size (msg) == 2) {
+			// ID
 			zframe_t *frame = zmsg_first (msg);
-			if (memcmp (zframe_data (frame), PPP_READY, 1)
-			&&  memcmp (zframe_data (frame), PPP_HEARTBEAT, 1)) {
-				printf ("E: invalid message from backend_resource\n");
-				zmsg_dump (msg);
-			} else {
+			printf("[%s] RX MSG FROM %s\n", self->name, zframe_strhex(frame));
+			frame = zmsg_next(msg);
+			if (memcmp (zframe_data (frame), READY, 0)) {
 				printf("[%s] RX HB BACKEND %s\n", self->name, backend_resource->id_string);
 			}
 			zmsg_destroy (&msg);
@@ -326,7 +328,7 @@ int running(resource_t *self) {//  List of available backend_resources
 		if (zmsg_size (msg) == 1)  {
 			printf("[%s] RX HB FRONTEND\n", self->name);
 			zframe_t *frame = zmsg_first (msg);
-			if (memcmp (zframe_data (frame), PPP_READY, 1)
+			if (memcmp (zframe_data (frame), READY, 1)
 			&&  memcmp (zframe_data (frame), PPP_HEARTBEAT, 1)) {
 				printf ("E: invalid message from backend_resource\n");
 				zmsg_dump (msg);

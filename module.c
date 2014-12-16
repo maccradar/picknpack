@@ -1,6 +1,8 @@
 //  Pick-n-Pack Module, based on ZeroMQ's Paranoid Pirate worker
 
 #include "czmq.h"
+#include "defs.h"
+
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
 #define HEARTBEAT_INTERVAL  1000    //  msecs
 #define INTERVAL_INIT       1000    //  Initial reconnect
@@ -121,6 +123,8 @@ int initializing(module_t* self) {
 
     //  Tell frontend we're ready for work
     zframe_t *frame = zframe_new (self->name, sizeof(self->name));
+    zframe_send (&frame, self->frontend, ZFRAME_MORE);
+    frame = zframe_new(READY, 1);
     zframe_send (&frame, self->frontend, 0);
     printf("done.\n");
 
