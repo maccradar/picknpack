@@ -120,7 +120,7 @@ int initializing(module_t* self) {
     zsock_signal (self->pipe, 0);
 
     //  Tell frontend we're ready for work
-    zframe_t *frame = zframe_new (PPP_READY, 1);
+    zframe_t *frame = zframe_new (self->name, sizeof(self->name));
     zframe_send (&frame, self->frontend, 0);
     printf("done.\n");
 
@@ -149,18 +149,20 @@ int running(module_t* self) {
 	    uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
 
 		zmq_pollitem_t items [] = {
-			{ zsock_resolve(self->backend),  0, ZMQ_POLLIN, 0 },
-			{ zsock_resolve(self->frontend), 0, ZMQ_POLLIN, 0 }
+			{ zsock_resolve(self->frontend), 0, ZMQ_POLLIN, 0 },
+			{ zsock_resolve(self->backend),  0, ZMQ_POLLIN, 0 }
 		};
-		//  Poll frontend only if we have available modules
+
+		//  Poll backend only if we have available resources
 		int rc = zmq_poll (items, zlist_size (self->devices)? 2: 1,
 			HEARTBEAT_INTERVAL * ZMQ_POLL_MSEC);
 		if (rc == -1) {
 			printf("E: Line Controller failed to poll sockets\n");
 			return -1;              //  Interrupted
 		}
-		//  Handle module activity on backend
-		if (items [0].revents & ZMQ_POLLIN) {
+
+		//  Handle activity on backend
+		if (items [1].revents & ZMQ_POLLIN) {
 			//  Use module identity for load-balancing
 			zmsg_t *msg = zmsg_recv (self->backend);
 			if (!msg)
@@ -186,7 +188,7 @@ int running(module_t* self) {
 			else // we assume here all other messages are replies which need to be sent to the clients
 				zmsg_send (&msg, self->frontend);
 		}
-		if (items [1].revents & ZMQ_POLLIN) {
+		if (items [0].revents & ZMQ_POLLIN) {
 			//  Poll frontend
 			zmsg_t *msg = zmsg_recv (self->frontend);
 			if (!msg)

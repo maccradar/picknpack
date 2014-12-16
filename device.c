@@ -280,6 +280,7 @@ int pausing(resource_t *self) {
     printf("done.\n");
     return 0;
 }
+
 int finalizing(resource_t *self) {
     printf("[%s] finalizing...", self->name);
     zsock_destroy(&self->frontend);
