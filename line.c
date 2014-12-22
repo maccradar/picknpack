@@ -50,17 +50,35 @@ state transitions[NUM_STATES][NUM_SIGNALS] = {
 
 typedef struct {
     zframe_t *identity;         //  Identity of resource
+    char *uuid;					//  Pick-n-Pack universal unique identifier
     char *id_string;            //  Printable identity
     int64_t expiry;             //  Expires at this time
 } backend_resource_t;
 
+static char* uuid_to_name(char* uuid) {
+	if(strncmp(uuid,PNP_LINE_ID,3) == 0)
+		return PNP_LINE;
+	if(strncmp(uuid,PNP_THERMOFORMER_ID,3) == 0)
+		return PNP_THERMOFORMER;
+	if(strncmp(uuid,PNP_QAS_ID,3) == 0)
+		return PNP_QAS;
+	if(strncmp(uuid,PNP_ROBOT_CELL_ID,3) == 0)
+		return PNP_ROBOT_CELL;
+	if(strncmp(uuid,PNP_CEILING_ID,3) == 0)
+		return PNP_CEILING;
+	if(strncmp(uuid,PNP_PRINTING_ID,3) == 0)
+		return PNP_PRINTING;
+	return "unknown";
+}
+
 //  Construct new resource, i.e. new local object representing a resource at the backend
 static backend_resource_t *
-s_backend_resource_new (zframe_t *identity)
+s_backend_resource_new (zframe_t *identity, char* uuid)
 {
     backend_resource_t *self = (backend_resource_t *) zmalloc (sizeof (backend_resource_t));
     self->identity = identity;
-    self->id_string = zframe_strhex (identity);
+    self->uuid = uuid;
+    self->id_string = uuid_to_name(uuid);//zframe_strhex (identity);
     self->expiry = zclock_time ()
                  + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS;
     return self;
@@ -254,8 +272,8 @@ int initializing(resource_t* self) {
     printf("[%s] initializing...", self->name);
     // send signal on pipe socket to acknowledge initialization
     zsock_signal (self->pipe, 0);
-    zlist_push(self->required_resources, PNP_QAS);
-    zlist_push(self->required_resources, PNP_PRINTING);
+    zlist_push(self->required_resources, PNP_QAS_ID);
+    zlist_push(self->required_resources, PNP_PRINTING_ID);
     zframe_t *frame = zframe_new (READY, 1);
     zframe_send (&frame, self->frontend, 0);
 
@@ -302,18 +320,22 @@ int running(resource_t *self) {
 
 		//  Any sign of life from backend_resource means it's ready
 		zframe_t *identity = zmsg_unwrap (msg);
-		backend_resource_t *backend_resource = s_backend_resource_new (identity);
-		s_backend_resource_ready (backend_resource, self->backend_resources);
+		
+		//backend_resource_t *backend_resource = s_backend_resource_new (identity);
+		//s_backend_resource_ready (backend_resource, self->backend_resources);
 
 		//  Validate control message, or return reply to client
 		if (zmsg_size (msg) == 2) {
 			// ID
 			zframe_t *frame = zmsg_first (msg);
-			printf("[%s] RX MSG FROM %s\n", self->name, zframe_strhex(frame));
+			printf("[%s] RX MSG FROM %s\n", self->name, uuid_to_name(zframe_data(frame)));
+			backend_resource_t *backend_resource = s_backend_resource_new (identity, zframe_data(frame));
 			frame = zmsg_next(msg);
 			if (memcmp (zframe_data (frame), READY, 0)) {
-				printf("[%s] RX HB BACKEND %s\n", self->name, backend_resource->id_string);
+				printf("[%s] RX READY BACKEND %s\n", self->name, backend_resource->id_string);
+				s_backend_resource_ready (backend_resource, self->backend_resources);
 			}
+			
 			zmsg_destroy (&msg);
 		}
 		else // we assume here all other messages are replies which need to be sent to the clients
