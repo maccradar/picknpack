@@ -2,260 +2,6 @@
 #include "czmq.h"
 #include "defs.h"
 
-#define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
-#define HEARTBEAT_INTERVAL  1000    //  msecs
-#define INTERVAL_INIT       1000    //  Initial reconnect
-#define INTERVAL_MAX       32000    //  After exponential backoff
-
-//  Pick-n-Pack Protocol constants for signalling
-//#define PPP_READY       "\001"      //  Signals device is ready
-#define PPP_HEARTBEAT   "\002"      //  Signals device heartbeat
-
-#define STACK_MAX 5 // maximum size of transition stack, e.g. running->configuring->initialising->finalising->pausing when configuring cannot proceed without reinit
-#define PAYLOAD_MAX 10 // maximum number of payload items in a single transition. E.g. change 10 configuration parameters.
-
-typedef enum states{
-	STATE_CREATING,
-	STATE_INITIALIZING,
-	STATE_CONFIGURING,
-	STATE_RUNNING,
-	STATE_PAUSING,
-	STATE_FINALIZING,
-	STATE_DELETING,
-	NUM_STATES,
-	NO_STATE
-}state;
-
-typedef enum signals{
-	SIGNAL_RUN,
-	SIGNAL_PAUSE,
-	SIGNAL_STOP,
-	SIGNAL_CONFIGURE,
-	SIGNAL_REBOOT,
-  	NUM_SIGNALS
-}signl;
-
-state transitions[NUM_STATES][NUM_SIGNALS] = {
-						 		/*SIGNAL_RUN		SIGNAL_PAUSE        SIGNAL_STOP      	SIGNAL_CONFIGURE 	SIGNAL_REBOOT */
-	/*STATE_CREATING*/     	{  	STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING},
-	/*STATE_INITIALIZING*/ 	{  	STATE_CONFIGURING,  STATE_CONFIGURING,  STATE_CONFIGURING,	STATE_CONFIGURING,	NO_STATE},
-	/*STATE_CONFIGURING*/  	{  	STATE_RUNNING,      STATE_PAUSING,    	STATE_PAUSING,    	NO_STATE,  			STATE_PAUSING},
-	/*STATE_RUNNING*/      	{  	NO_STATE,			STATE_PAUSING,    	STATE_PAUSING,      STATE_CONFIGURING,  STATE_PAUSING},
-	/*STATE_PAUSING*/      	{  	STATE_RUNNING,      NO_STATE,    		STATE_FINALIZING,   STATE_CONFIGURING,  STATE_FINALIZING},
-	/*STATE_FINALIZING*/   	{  	STATE_INITIALIZING, STATE_INITIALIZING,	STATE_DELETING,     STATE_INITIALIZING, STATE_INITIALIZING},
-	/*STATE_DELETING*/     	{  	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE}
-};
-
-
-
-typedef struct {
-    zframe_t *identity;         //  Identity of resource
-    char *uuid;					//  Pick-n-Pack universal unique identifier
-    char *id_string;            //  Printable identity
-    int64_t expiry;             //  Expires at this time
-} backend_resource_t;
-
-static char* uuid_to_name(char* uuid) {
-	if(strncmp(uuid,PNP_LINE_ID,3) == 0)
-		return PNP_LINE;
-	if(strncmp(uuid,PNP_THERMOFORMER_ID,3) == 0)
-		return PNP_THERMOFORMER;
-	if(strncmp(uuid,PNP_QAS_ID,3) == 0)
-		return PNP_QAS;
-	if(strncmp(uuid,PNP_ROBOT_CELL_ID,3) == 0)
-		return PNP_ROBOT_CELL;
-	if(strncmp(uuid,PNP_CEILING_ID,3) == 0)
-		return PNP_CEILING;
-	if(strncmp(uuid,PNP_PRINTING_ID,3) == 0)
-		return PNP_PRINTING;
-	return "unknown";
-}
-
-//  Construct new resource, i.e. new local object representing a resource at the backend
-static backend_resource_t *
-s_backend_resource_new (zframe_t *identity, char* uuid)
-{
-    backend_resource_t *self = (backend_resource_t *) zmalloc (sizeof (backend_resource_t));
-    self->identity = identity;
-    self->uuid = uuid;
-    self->id_string = uuid_to_name(uuid);//zframe_strhex (identity);
-    self->expiry = zclock_time ()
-                 + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS;
-    return self;
-}
-
-//  Destroy specified backend_resource object, including identity frame.
-static void
-s_backend_resource_destroy (backend_resource_t **self_p)
-{
-    assert (self_p);
-    if (*self_p) {
-        backend_resource_t *self = *self_p;
-        zframe_destroy (&self->identity);
-        free (self->id_string);
-        free (self);
-        *self_p = NULL;
-    }
-}
-
-//  The ready method puts a backend_resource to the end of the ready list:
-
-static void
-s_backend_resource_ready (backend_resource_t *self, zlist_t *backend_resources)
-{
-    backend_resource_t *backend_resource = (backend_resource_t *) zlist_first (backend_resources);
-    while (backend_resource) {
-        if (streq (self->id_string, backend_resource->id_string)) {
-            zlist_remove (backend_resources, backend_resource);
-            s_backend_resource_destroy (&backend_resource);
-            break;
-        }
-        backend_resource = (backend_resource_t *) zlist_next (backend_resources);
-    }
-    zlist_append (backend_resources, self);
-}
-
-//  The next method returns the next available backend_resource identity:
-//  TODO: Not all backend_resources have the same capabilities so we should not just pick any backend_resource...
-
-static zframe_t *
-s_backend_resources_next (zlist_t *backend_resources)
-{
-    backend_resource_t *backend_resource = zlist_pop (backend_resources);
-    assert (backend_resource);
-    zframe_t *frame = backend_resource->identity;
-    backend_resource->identity = NULL;
-    s_backend_resource_destroy (&backend_resource);
-    return frame;
-}
-
-//  The purge method looks for and kills expired backend_resources. We hold backend_resources
-//  from oldest to most recent, so we stop at the first alive backend_resource:
-//  TODO: if backend_resources expire, it should be checked if this effects the working of the line!
-
-static void
-s_backend_resources_purge (zlist_t *backend_resources)
-{
-    backend_resource_t *backend_resource = (backend_resource_t *) zlist_first (backend_resources);
-    while (backend_resource) {
-        if (zclock_time () < backend_resource->expiry)
-            break;              //  backend_resource is alive, we're done here
-	printf("I: Removing expired backend_resource %s\n", backend_resource->id_string);
-        zlist_remove (backend_resources, backend_resource);
-        s_backend_resource_destroy (&backend_resource);
-        backend_resource = (backend_resource_t *) zlist_first (backend_resources);
-    }
-}
-
-typedef struct {
-    char *name;
-    zsock_t *frontend; // socket to frontend process, e.g. backend_resource
-    zsock_t *backend; // socket to potential backend processes, e.g. subdevices
-    zsock_t *pipe; // socket to main loop
-    size_t liveness; // liveness defines how many heartbeat failures are tolerable
-    size_t interval; // interval defines at what interval heartbeats are sent
-    uint64_t heartbeat_at; // heartbeat_at defines when to send next heartbeat
-    zlist_t *backend_resources;
-    zlist_t *required_resources;
-} resource_t;
-
-typedef struct {
-	char* name;
-	void* value;
-} payload_item;
-
-typedef struct{
-	payload_item *items[PAYLOAD_MAX];
-	unsigned int size;//number of payload items
-}payload;
-
-
-typedef struct{
-	state state;
-	payload *payload;
-} transition;
-
-transition* new_transition(void) {
-  return calloc(1,sizeof(transition));
-}
-
-payload* new_payload(void) {
-  return calloc(1,sizeof(payload));
-}
-
-payload_item* new_payload_item(void) {
-  return calloc(1,sizeof(payload_item));
-}
-
-// assumption:
-// <names> and <values> are both of length <size> and smaller than <PAYLOAD_MAX>
-static void payload_init(payload* payload, char* names[], void* values[], int size) {
-	int i;
-	for(i=0;i<size; i++) {
-		payload_item* p_i = new_payload_item();
-		p_i->name = names[i];
-		p_i->value = values[i];
-		payload->items[i] = p_i;
-	}
-	payload->size = size;
-}
-
-typedef struct {
-    transition *transitions[STACK_MAX];
-    unsigned int size;
-} transition_stack;
-
-
-static void transition_stack_init(transition_stack *S){
-    S->size = 0;
-}
-
-static transition *transition_stack_top(transition_stack *S){
-    if (S->size == 0) {
-        //fprintf(stderr, "Error: stack empty\n");
-        return NULL;
-    }
-    return (S->transitions[S->size-1]);
-}
-
-static void transition_stack_push(transition_stack *S, transition *d){
-    if (S->size < STACK_MAX){
-        S->transitions[S->size++] = d;
-    }else{
-        fprintf(stderr, "Error: stack full\n");
-    }
-}
-
-static void transition_stack_pop(transition_stack *S){
-    if (S->size == 0){
-        fprintf(stderr, "Error: stack empty\n");
-    }else{
-        S->size--;
-    }
-}
-
-typedef int (*state_fnc)(resource_t* self, payload *payload);
-
-
-
-int creating_fnc(resource_t* self, payload *payload);
-int initializing_fnc(resource_t* self, payload *payload);
-int configuring_fnc(resource_t* self, payload *payload);
-int running_fnc(resource_t* self, payload *payload);
-int pausing_fnc(resource_t* self, payload *payload);
-int finalizing_fnc(resource_t* self, payload *payload);
-int deleting_fnc(resource_t* self, payload *payload);
-
-state_fnc state_functions[NUM_STATES] = {
-	/*STATE_CREATING*/     	 	creating_fnc,
-	/*STATE_INITIALIZING*/ 	 	initializing_fnc,
-	/*STATE_CONFIGURING*/  		configuring_fnc,
-	/*STATE_RUNNING*/      	 	running_fnc,
-	/*STATE_PAUSING*/      	 	pausing_fnc,
-	/*STATE_FINALIZING*/   	 	finalizing_fnc,
-	/*STATE_DELETING*/     	 	deleting_fnc
-};
-
 resource_t* creating(resource_t *self, zsock_t *pipe, char *name) {
     printf("[%s] creating...", name);
     self->name = name;
@@ -274,6 +20,7 @@ int initializing(resource_t* self) {
     zsock_signal (self->pipe, 0);
     zlist_push(self->required_resources, PNP_QAS_ID);
     zlist_push(self->required_resources, PNP_PRINTING_ID);
+
     zframe_t *frame = zframe_new (READY, 1);
     zframe_send (&frame, self->frontend, 0);
 
@@ -338,7 +85,19 @@ int running(resource_t *self) {
 			
 			zmsg_destroy (&msg);
 		}
-		else // we assume here all other messages are replies which need to be sent to the clients
+		else if (zmsg_size (msg) == 3) {
+			// ID
+			zframe_t *frame = zmsg_first (msg);
+			char* name = zframe_data(frame);
+			frame = zmsg_next(msg);
+			char* state = zframe_data(frame);
+			frame = zmsg_next(msg);
+			char* signal = zframe_data(frame);
+			printf("[%s] RX HB [%s, %s, %s]\n", self->name, uuid_to_name(name), state, signal);
+
+			zmsg_destroy (&msg);
+		} else
+			// we assume here all other messages are replies which need to be sent to the clients
 			zmsg_send (&msg, self->frontend);
 	}
 	if (items [1].revents & ZMQ_POLLIN) {
@@ -430,6 +189,7 @@ int deleting(resource_t *self) {
     return 0;
 }
 
+/*
 int creating_fnc(resource_t* self,payload *payload){
 	self = creating(self, (*payload->items[0]).value, (*payload->items[1]).value);
     assert(self);
@@ -557,7 +317,7 @@ static void resource_actor(zsock_t *pipe, void *args){
 
     printf("[%s] actor stopped.\n", name);
 }
-
+*/
 
 /* main */
 int main(int argc, char** args)
