@@ -93,8 +93,6 @@ state transitions[NUM_STATES][NUM_SIGNALS] = {
 	/*STATE_DELETING*/     	{  	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE}
 };
 
-
-
 typedef struct {
     zframe_t *identity;         //  Identity of resource
     char *uuid;					//  Pick-n-Pack universal unique identifier
@@ -146,7 +144,6 @@ s_backend_resource_destroy (backend_resource_t **self_p)
 }
 
 //  The ready method puts a backend_resource to the end of the ready list:
-
 static void
 s_backend_resource_ready (backend_resource_t *self, zlist_t *backend_resources)
 {
@@ -164,7 +161,6 @@ s_backend_resource_ready (backend_resource_t *self, zlist_t *backend_resources)
 
 //  The next method returns the next available backend_resource identity:
 //  TODO: Not all backend_resources have the same capabilities so we should not just pick any backend_resource...
-
 static zframe_t *
 s_backend_resources_next (zlist_t *backend_resources)
 {
@@ -179,7 +175,6 @@ s_backend_resources_next (zlist_t *backend_resources)
 //  The purge method looks for and kills expired backend_resources. We hold backend_resources
 //  from oldest to most recent, so we stop at the first alive backend_resource:
 //  TODO: if backend_resources expire, it should be checked if this effects the working of the line!
-
 static void
 s_backend_resources_purge (zlist_t *backend_resources)
 {
@@ -283,8 +278,6 @@ static void transition_stack_pop(transition_stack *S){
 
 typedef int (*state_fnc)(resource_t* self, payload *payload);
 
-
-
 int creating_fnc(resource_t* self, payload *payload);
 int initializing_fnc(resource_t* self, payload *payload);
 int configuring_fnc(resource_t* self, payload *payload);
@@ -311,7 +304,6 @@ int running(resource_t *self);
 int pausing(resource_t *self);
 int finalizing(resource_t *self);
 int deleting(resource_t *self);
-
 
 int creating_fnc(resource_t* self,payload *payload){
 	self = creating(self, (*payload->items[0]).value, (*payload->items[1]).value);
