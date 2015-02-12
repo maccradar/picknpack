@@ -23,7 +23,7 @@ int initializing(resource_t* self) {
     //  Tell frontend we're ready for work
     zframe_t *frame = zframe_new (PNP_QAS_ID, sizeof(PNP_QAS_ID));
     zframe_send (&frame, self->frontend, ZFRAME_MORE);
-    frame = zframe_new(READY, sizeof(READY));
+    frame = zframe_new(PNP_READY, sizeof(PNP_READY));
     zframe_send (&frame, self->frontend, 0);
     printf("done.\n");
 
@@ -83,7 +83,7 @@ int running(resource_t* self) {
 				printf("[%s] RX MSG FROM %s\n", self->name, uuid_to_name(zframe_data(frame)));
 				backend_resource_t *backend_resource = s_backend_resource_new (identity, zframe_data(frame));
 				frame = zmsg_next(msg);
-				if (memcmp (zframe_data (frame), READY, 0)) {
+				if (memcmp (zframe_data (frame), PNP_READY, 0)) {
 					printf("[%s] RX READY BACKEND %s\n", self->name, backend_resource->id_string);
 					s_backend_resource_ready (backend_resource, self->backend_resources);
 				}
@@ -102,8 +102,8 @@ int running(resource_t* self) {
 			if (zmsg_size (msg) == 1)  {
 				printf("[%s] RX HB FRONTEND\n", self->name);
 				zframe_t *frame = zmsg_first (msg);
-				if (memcmp (zframe_data (frame), READY, 1)
-				&&  memcmp (zframe_data (frame), PPP_HEARTBEAT, 1)) {
+				if (memcmp (zframe_data (frame), PNP_READY, 1)
+				&&  memcmp (zframe_data (frame), PNP_HEARTBEAT, 1)) {
 					printf ("E: invalid message from module\n");
 					zmsg_dump (msg);
 				}
@@ -137,7 +137,7 @@ int running(resource_t* self) {
 			backend_resource_t *backend_resource = (backend_resource_t *) zlist_first (self->backend_resources);
 			while (backend_resource) {
 				zframe_send (&backend_resource->identity, self->backend,	ZFRAME_REUSE + ZFRAME_MORE);
-				zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
+				zframe_t *frame = zframe_new (PNP_HEARTBEAT, 1);
 				zframe_send (&frame, self->backend, 0);
 				printf("[%s] TX HB BACKEND %s\n", self->name, backend_resource->id_string);
 				backend_resource = (backend_resource_t *) zlist_next (self->backend_resources);
@@ -145,11 +145,11 @@ int running(resource_t* self) {
 			// Send status as heartbeat to frontend
 			zframe_t *frame = zframe_new (PNP_QAS_ID, sizeof(PNP_QAS_ID));
 			zframe_send (&frame, self->frontend, ZFRAME_MORE);
-			frame = zframe_new(RUNNING, sizeof(RUNNING));
+			frame = zframe_new(PNP_RUNNING, sizeof(PNP_RUNNING));
 			zframe_send (&frame, self->frontend, ZFRAME_MORE);
-			frame = zframe_new(RUN, sizeof(RUN));
+			frame = zframe_new(PNP_RUN, sizeof(PNP_RUN));
 			zframe_send (&frame, self->frontend, 0);
-			printf("[%s] TX HB FRONTEND\n", self->name);
+			printf("[%s] TX HB [%o, %o, %o] FRONTEND\n", self->name, PNP_QAS_ID[0], PNP_RUNNING[0], PNP_RUN[0]);
 			heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
 		}
 		s_backend_resources_purge (self->backend_resources);

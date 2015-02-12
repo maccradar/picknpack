@@ -5,13 +5,18 @@
 // Heartbeat message contains 3 frames: ID, STATE, SIGNAL/COMMAND
 // Data message contains 4 frames: ID, STATE, SIGNAL/COMMAND, PAYLOAD
 
+//  Pick-n-Pack Protocol constants for signalling
+#define PNP_READY "\001"    //  Signals device is ready
+#define PNP_HEARTBEAT "\002"      //  Signals device heartbeat
+
+
 // IDs
-#define PNP_LINE_ID "\050"
-#define PNP_THERMOFORMER_ID "\051"
-#define PNP_ROBOT_CELL_ID "\052"
-#define PNP_QAS_ID "\053"
-#define PNP_CEILING_ID "\054"
-#define PNP_PRINTING_ID "\055"
+#define PNP_LINE_ID "\010"
+#define PNP_THERMOFORMER_ID "\011"
+#define PNP_ROBOT_CELL_ID "\012"
+#define PNP_QAS_ID "\013"
+#define PNP_CEILING_ID "\014"
+#define PNP_PRINTING_ID "\015"
 
 // Names
 #define PNP_LINE "Line"
@@ -22,31 +27,29 @@
 #define PNP_PRINTING "Printing"
 
 // Status
-#define CREATING "\100"
-#define INITIALISING "\101"
-#define CONFIGURING "\102"
-#define RUNNING "\103"
-#define PAUSING "\104"
-#define FINALISING "\105"
-#define DELETING "\106"
+#define PNP_CREATING "\100"
+#define PNP_INITIALISING "\101"
+#define PNP_CONFIGURING "\102"
+#define PNP_RUNNING "\103"
+#define PNP_PAUSING "\104"
+#define PNP_FINALISING "\105"
+#define PNP_DELETING "\106"
 
 // Signals/commands
-#define RUN "\200"
-#define PAUSE "\201"
-#define CONFIGURE "\202"
-#define STOP "\203"
-#define REBOOT "\204"
+#define PNP_RUN "\110"
+#define PNP_PAUSE "\111"
+#define PNP_CONFIGURE "\112"
+#define PNP_STOP "\113"
+#define PNP_REBOOT "\114"
 
 // Error codes
-#define ERR_HEARTBEAT "\301"
-#define ERR_FPGA "\302"
-#define ERR_CAMERA "\303"
-#define ERR_MISSING_PARAMETER "\304"
-#define ERR_HDF5 "\305"
-#define ERR_LOG "\306"
-#define ERR_UNDEFINED "\307"
-
-#define READY "\001"
+#define PNP_ERR_HEARTBEAT "\121"
+#define PNP_ERR_FPGA "\122"
+#define PNP_ERR_CAMERA "\123"
+#define PNP_ERR_MISSING_PARAMETER "\124"
+#define PNP_ERR_HDF5 "\125"
+#define PNP_ERR_LOG "\126"
+#define PNP_ERR_UNDEFINED "\127"
 
 // Resource definitions
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
@@ -54,9 +57,7 @@
 #define INTERVAL_INIT       1000    //  Initial reconnect
 #define INTERVAL_MAX       32000    //  After exponential backoff
 
-//  Pick-n-Pack Protocol constants for signalling
-//#define PPP_READY       "\001"      //  Signals device is ready
-#define PPP_HEARTBEAT   "\002"      //  Signals device heartbeat
+
 
 #define STACK_MAX 5 // maximum size of transition stack, e.g. running->configuring->initialising->finalising->pausing when configuring cannot proceed without reinit
 #define PAYLOAD_MAX 10 // maximum number of payload items in a single transition. E.g. change 10 configuration parameters.
