@@ -65,29 +65,6 @@ int running(resource_t* self) {
 		}
 
 		//  Handle activity on backend
-<<<<<<< HEAD
-		if (items [1].revents & ZMQ_POLLIN) {
-			//  Use module identity for load-balancing
-			zmsg_t *msg = zmsg_recv (self->backend);
-			if (!msg)
-				return -1;          //  Interrupted
-
-			//  Any sign of life from module means it's ready
-			zframe_t *identity = zmsg_unwrap (msg);
-			//backend_resource_t *backend_resource = s_backend_resource_new (identity);
-			//s_backend_resource_ready (backend_resource, self->backend_resources);
-
-			//  Validate control message, or return reply to client
-			if (zmsg_size (msg) == 2) {
-				// ID
-				zframe_t *frame = zmsg_first (msg);
-				printf("[%s] RX MSG FROM %s\n", self->name, uuid_to_name(zframe_data(frame)));
-				backend_resource_t *backend_resource = s_backend_resource_new (identity, zframe_data(frame));
-				frame = zmsg_next(msg);
-				if (memcmp (zframe_data (frame), PNP_READY, 0)) {
-					printf("[%s] RX READY BACKEND %s\n", self->name, backend_resource->id_string);
-					s_backend_resource_ready (backend_resource, self->backend_resources);
-=======
 		if (items [0].revents & ZMQ_POLLIN) {
 				//  Use backend_resource identity for identify resource location
 				zmsg_t *msg = zmsg_recv (self->backend);
@@ -129,7 +106,6 @@ int running(resource_t* self) {
 					printf("here!");
 					// we assume here all other messages are replies which need to be sent to the clients
 					zmsg_send (&msg, self->frontend);
->>>>>>> ffe90cb5451504c28c1f73d5d74af692eb1bc2c3
 				}
 			}
 		if (items [1].revents & ZMQ_POLLIN) {
