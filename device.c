@@ -1,181 +1,16 @@
 //  Pick-n-Pack Device, based on ZeroMQ's Paranoid Pirate worker
 #include "czmq.h"
-
-#define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
-#define HEARTBEAT_INTERVAL  1000    //  msecs
-#define INTERVAL_INIT       1000    //  Initial reconnect
-#define INTERVAL_MAX       32000    //  After exponential backoff
-
-//  Pick-n-Pack Protocol constants for signalling
-#define PPP_READY       "\001"      //  Signals device is ready
-#define PPP_HEARTBEAT   "\002"      //  Signals device heartbeat
-
-#define STACK_MAX 5 // maximum size of transition stack, e.g. running->configuring->initialising->finalising->pausing when configuring cannot proceed without reinit
-#define PAYLOAD_MAX 10 // maximum number of payload items in a single transition. E.g. change 10 configuration parameters.
-
-typedef enum states{
-	STATE_CREATING,
-	STATE_INITIALIZING,
-	STATE_CONFIGURING,
-	STATE_RUNNING,
-	STATE_PAUSING,
-	STATE_FINALIZING,
-	STATE_DELETING,
-	NUM_STATES,
-	NO_STATE
-}state;
-
-typedef enum signals{
-	SIGNAL_RUN,
-	SIGNAL_PAUSE,
-	SIGNAL_STOP,
-	SIGNAL_CONFIGURE,
-	SIGNAL_REBOOT,
-  	NUM_SIGNALS
-}signl;
-
-state transitions[NUM_STATES][NUM_SIGNALS] = {
-						 		/*SIGNAL_RUN		SIGNAL_PAUSE        SIGNAL_STOP      	SIGNAL_CONFIGURE 	SIGNAL_REBOOT */
-	/*STATE_CREATING*/     	{  	STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING, STATE_INITIALIZING},
-	/*STATE_INITIALIZING*/ 	{  	STATE_CONFIGURING,  STATE_CONFIGURING,  STATE_CONFIGURING,	STATE_CONFIGURING,	NO_STATE},
-	/*STATE_CONFIGURING*/  	{  	STATE_RUNNING,      STATE_PAUSING,    	STATE_PAUSING,    	NO_STATE,  			STATE_PAUSING},
-	/*STATE_RUNNING*/      	{  	NO_STATE,			STATE_PAUSING,    	STATE_PAUSING,      STATE_CONFIGURING,  STATE_PAUSING},
-	/*STATE_PAUSING*/      	{  	STATE_RUNNING,      NO_STATE,    		STATE_FINALIZING,   STATE_CONFIGURING,  STATE_FINALIZING},
-	/*STATE_FINALIZING*/   	{  	STATE_INITIALIZING, STATE_INITIALIZING,	STATE_DELETING,     STATE_INITIALIZING, STATE_INITIALIZING},
-	/*STATE_DELETING*/     	{  	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE,         	NO_STATE}
-};
-
-
-//  Helper function that returns a new configured socket
-//  connected to the Paranoid Pirate queue
-
-static zsock_t *
-s_device_socket (char *name, char *link) {
-    zsock_t *device = zsock_new_dealer(link); // TODO: this should be configured
-    //  Tell Line Controller we're ready for work
-    printf ("[%s] socket ready", name);
-    zframe_t *frame = zframe_new (PPP_READY, 1);
-    zframe_send (&frame, device, 0);
-
-    return device;
-}
-
-typedef struct {
-    char *name;
-    zsock_t *frontend; // socket to frontend process, e.g. module
-    zsock_t *frontend_heartbeat; // socket for heartbeat to frontend process, e.g. module
-    zsock_t *backend; // socket to potential backend processes, e.g. subdevices
-    zsock_t *backend_heartbeat; // socket for heartbeat to backend process, e.g. subdevices
-    zsock_t *pipe; // socket to main loop
-    size_t liveness; // liveness defines how many heartbeat failures are tolerable
-    size_t interval; // interval defines at what interval heartbeats are sent
-    uint64_t heartbeat_at; // heartbeat_at defines when to send next heartbeat
-} resource_t;
-
-typedef struct {
-	char* name;
-	void* value;
-} payload_item;
-
-typedef struct{
-	payload_item *items[PAYLOAD_MAX];
-	unsigned int size;//number of payload items
-}payload;
-
-
-typedef struct{
-	state state;
-	payload *payload;
-} transition;
-
-transition* new_transition(void) {
-  return calloc(1,sizeof(transition));
-}
-
-payload* new_payload(void) {
-  return calloc(1,sizeof(payload));
-}
-
-payload_item* new_payload_item(void) {
-  return calloc(1,sizeof(payload_item));
-}
-
-// assumption:
-// <names> and <values> are both of length <size> and smaller than <PAYLOAD_MAX>
-static void payload_init(payload* payload, char* names[], void* values[], int size) {
-	int i;
-	for(i=0;i<size; i++) {
-		payload_item* p_i = new_payload_item();
-		p_i->name = names[i];
-		p_i->value = values[i];
-		payload->items[i] = p_i;
-	}
-	payload->size = size;
-}
-
-typedef struct {
-    transition *transitions[STACK_MAX];
-    unsigned int size;
-} transition_stack;
-
-
-static void transition_stack_init(transition_stack *S){
-    S->size = 0;
-}
-
-static transition *transition_stack_top(transition_stack *S){
-    if (S->size == 0) {
-        //fprintf(stderr, "Error: stack empty\n");
-        return NULL;
-    }
-    return (S->transitions[S->size-1]);
-}
-
-static void transition_stack_push(transition_stack *S, transition *d){
-    if (S->size < STACK_MAX){
-        S->transitions[S->size++] = d;
-    }else{
-        fprintf(stderr, "Error: stack full\n");
-    }
-}
-
-static void transition_stack_pop(transition_stack *S){
-    if (S->size == 0){
-        fprintf(stderr, "Error: stack empty\n");
-    }else{
-        S->size--;
-    }
-}
-
-typedef int (*state_fnc)(resource_t* self, payload *payload);
-
-
-
-int creating_fnc(resource_t* self, payload *payload);
-int initializing_fnc(resource_t* self, payload *payload);
-int configuring_fnc(resource_t* self, payload *payload);
-int running_fnc(resource_t* self, payload *payload);
-int pausing_fnc(resource_t* self, payload *payload);
-int finalizing_fnc(resource_t* self, payload *payload);
-int deleting_fnc(resource_t* self, payload *payload);
-
-state_fnc state_functions[NUM_STATES] = {
-	/*STATE_CREATING*/     	 	creating_fnc,
-	/*STATE_INITIALIZING*/ 	 	initializing_fnc,
-	/*STATE_CONFIGURING*/  		configuring_fnc,
-	/*STATE_RUNNING*/      	 	running_fnc,
-	/*STATE_PAUSING*/      	 	pausing_fnc,
-	/*STATE_FINALIZING*/   	 	finalizing_fnc,
-	/*STATE_DELETING*/     	 	deleting_fnc
-};
+#include "defs.h"
 
 
 resource_t* creating(resource_t *self, zsock_t *pipe, char *name) {
     printf("[%s] creating...", name);
     self->name = name;
-    self->frontend = s_device_socket(name,"tcp://localhost:9003");
+    self->frontend = zsock_new_dealer("tcp://localhost:9003");
     self->backend = NULL;
     self->pipe = pipe;
+    self->backend_resources = zlist_new ();
+    self->required_resources = zlist_new();
     printf("...done.\n");
     return self;
 }
@@ -184,6 +19,12 @@ int initializing(resource_t* self) {
     printf("[%s] starting...", self->name);
     // send signal on pipe socket to acknowledge initialisation
     zsock_signal (self->pipe, 0);
+
+    //  Tell frontend we're ready for work
+	zframe_t *frame = zframe_new (PNP_QAS_ID, sizeof(PNP_QAS_ID));
+	zframe_send (&frame, self->frontend, ZFRAME_MORE);
+	frame = zframe_new(READY, sizeof(READY));
+	zframe_send (&frame, self->frontend, 0);
     printf("done.\n");
 
     return 0;
@@ -205,72 +46,63 @@ int configuring (resource_t* self) {
 
 
 int running(resource_t* self) {
+	uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
+
 	zmq_pollitem_t items [] = { { zsock_resolve(self->frontend),  0, ZMQ_POLLIN, 0 } };
 	int rc = zmq_poll (items, 1, self->interval * ZMQ_POLL_MSEC);
 	if (rc == -1)
 		return -1; //  Interrupted
 
 	if (items [0].revents & ZMQ_POLLIN) {
-		//  Get message
-		//  - 2-part envelope + content -> request
-		//  - 1-part HEARTBEAT -> heartbeat
+		//  Poll frontend
 		zmsg_t *msg = zmsg_recv (self->frontend);
 		if (!msg)
-			return -1; //  Interrupted
-
-		if (zmsg_size (msg) == 2) {
-			printf ("I: normal reply\n");
-			zmsg_print(msg);
-			zmsg_send (&msg, self->frontend);
-			self->liveness = HEARTBEAT_LIVENESS;
-			sleep (1);              //  Do some heavy work
-			if (zsys_interrupted)
-				return -1;
-		}
-		else
-		//  .split handle heartbeats
-		//  When we get a heartbeat message from the queue, it means the
-		//  queue was (recently) alive, so we must reset our liveness
-		//  indicator:
-		if (zmsg_size (msg) == 1) {
+			return -1;          //  Interrupted
+		//  Validate control message, or return reply to client
+		if (zmsg_size (msg) == 1)  {
+			printf("[%s] RX HB FRONTEND\n", self->name);
 			zframe_t *frame = zmsg_first (msg);
-			if (memcmp (zframe_data (frame), PPP_HEARTBEAT, 1) == 0) {
-				printf("[%s] RX HB FRONTEND\n", self->name);
-				self->liveness = HEARTBEAT_LIVENESS;
-			} else {
-				printf ("E: invalid message\n");
+			if (memcmp (zframe_data (frame), READY, 1)
+			&&  memcmp (zframe_data (frame), PPP_HEARTBEAT, 1)) {
+				printf ("E: invalid message from module\n");
 				zmsg_dump (msg);
 			}
 			zmsg_destroy (&msg);
 		}
-		else {
-			printf ("E: invalid message\n");
-				zmsg_dump (msg);
-			}
-			self->interval = INTERVAL_INIT;
-	}
-	else
-	//  .split detecting a dead queue
-	//  If the queue hasn't sent us heartbeats in a while, destroy the
-	//  socket and reconnect. This is the simplest most brutal way of
-	//  discarding any messages we might have sent in the meantime:
-	if (--self->liveness == 0) {
-		printf ("[%s] heartbeat failure, can't reach frontend\n", self->name);
-		printf ("[%s] reconnecting in %zd msec...\n", self->name, self->interval);
-		zclock_sleep (self->interval);
+		else
+			//  .split detecting a dead queue
+			//  If the queue hasn't sent us heartbeats in a while, destroy the
+			//  socket and reconnect. This is the simplest most brutal way of
+			//  discarding any messages we might have sent in the meantime:
+			if (--self->liveness == 0) {
+				printf ("[%s] heartbeat failure, can't reach frontend\n", self->name);
+				printf ("[%s] reconnecting in %zd msec...\n", self->name, self->interval);
+				zclock_sleep (self->interval);
 
-		if (self->interval < INTERVAL_MAX)
-			self->interval *= 2;
-		zsock_destroy(&self->frontend);
-		self->frontend = zsock_new_dealer("tcp://localhost:9003"); // TODO: this should be configured.
-		self->liveness = HEARTBEAT_LIVENESS;
+				if (self->interval < INTERVAL_MAX)
+					self->interval *= 2;
+				zsock_destroy(&self->frontend);
+				self->frontend = zsock_new_dealer("tcp://localhost:9003"); // TODO: this should be configured.
+				self->liveness = HEARTBEAT_LIVENESS;
+			}
+		//zframe_t *identity = s_modules_next (self->modules);
+		//zmsg_prepend (msg, &identity);
+		//zmsg_send (&msg, backend);
 	}
-	//  Send heartbeat to queue if it's time
-	if (zclock_time () > self->heartbeat_at) {
-		self->heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
-		printf ("[%s] TX HB FRONTEND\n", self->name);
-		zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
+	//  .split handle heartbeating
+	//  We handle heartbeating after any socket activity. First, we send
+	//  heartbeats to any idle modules if it's time. Then, we purge any
+	//  dead modules:
+	if (zclock_time () >= heartbeat_at) {
+		// Send status as heartbeat to frontend
+		zframe_t *frame = zframe_new (PNP_QAS_ID, sizeof(PNP_QAS_ID));
+		zframe_send (&frame, self->frontend, ZFRAME_MORE);
+		frame = zframe_new(RUNNING, sizeof(RUNNING));
+		zframe_send (&frame, self->frontend, ZFRAME_MORE);
+		frame = zframe_new(RUN, sizeof(RUN));
 		zframe_send (&frame, self->frontend, 0);
+		printf("[%s] TX HB FRONTEND\n", self->name);
+		heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
 	}
 	return 0;
 }
@@ -297,130 +129,6 @@ int deleting(resource_t *self) {
     return 0;
 }
 
-int creating_fnc(resource_t* self,payload *payload){
-	self = creating(self, (*payload->items[0]).value, (*payload->items[1]).value);
-    assert(self);
-    return 0;
-}
-
-int initializing_fnc(resource_t* self, payload *payload) {
-	return initializing(self);
-}
-
-int configuring_fnc(resource_t* self, payload *payload) {
-	return configuring(self);
-}
-
-int running_fnc(resource_t* self, payload *payload) {
-	while(!zsys_interrupted){
-
-	  if(running(self) < 0){
-		  return -1;
-	  }
-
-	  //TODO::check messages, if message is for running state process it else return -1
-	  //sleep(1);
-    }
-	return -1;
-}
-
-int pausing_fnc(resource_t* self, payload *payload) {
-
-	while(!zsys_interrupted){
-
-	  if(pausing(self) < 0){
-		  return -1;
-	  }
-	  //TODO::check messages, if message is for pausing state process it else return -1
-	  //sleep(1);
-	}
-	return -1;
-}
-
-int finalizing_fnc(resource_t* self,payload *payload) {
-	return finalizing(self);
-}
-
-int deleting_fnc(resource_t* self, payload *payload) {
-	return deleting(self);
-}
-
-static void generate_stack(transition_stack *s, state state, signl signal){
-	transition_stack t;
-	transition_stack_init(&t);
-
-	transition *temp;
-
-	//get first transition to the next state
-	state = transitions[state][signal];
-
-	//use transition table to generate path from initial state to state where signal leads to 'NO_STATE'.
-	while(state != NO_STATE){
-		printf("%d \n", state);
-		temp = new_transition();
-		temp->state = state;
-		temp->payload = new_payload();
-		transition_stack_push(&t,temp);
-		state = transitions[state][signal];
-	}
-
-	//reverse to path to make it suitable for the stack.
-	temp = transition_stack_top(&t);
-	while(temp != NULL){
-		transition_stack_pop(&t);
-		transition_stack_push(s,temp);
-		temp = transition_stack_top(&t);
-	}
-}
-
-static void device_actor(zsock_t *pipe, void *args){
-    char* name = (char*) args;
-    printf("[%s] actor started.\n", name);
-
-    resource_t *self = (resource_t *) zmalloc (sizeof (resource_t));
-
-    transition_stack s;
-    transition_stack_init(&s);
-
-    //setup initial conditions
-    state initial_state = STATE_CREATING;
-    signl initial_signal = SIGNAL_RUN;
-
-    //move to initial state
-    //NOTE: use of initial_state as variables questionable
-    transition *t = new_transition();
-    t->state = initial_state;
-    t->payload = malloc(sizeof(payload));
-    char* names[] = {"pipe","name"};
-    void* values[] = {pipe,name};
-    payload_init(t->payload,names,values,2);
-
-    //generate path for initial state and signal
-    generate_stack(&s,initial_state,initial_signal);
-    transition_stack_push(&s,t);//add transition to initial state last, since we have a stack
-
-    transition *transition = transition_stack_top(&s);
-    while(transition != NULL){
-    	transition_stack_pop(&s);//remove transition from stack
-
-    	//act
-    	int result = state_functions[transition->state](self,transition->payload);
-    	if(result < 0){
-    		break;//TODO::invoke stopping signal
-    	}
-    	free(transition);
-
-    	//TODO:: check communication lines for signals
-
-    	//get next state
-    	transition = transition_stack_top(&s);
-    }
-
-
-
-    printf("[%s] actor stopped.\n", name);
-}
-
 
 /* main */
 int main(int argc, char** args)
@@ -434,7 +142,7 @@ int main(int argc, char** args)
 	assert(name);
 
     // incoming data is handled by the actor thread
-    zactor_t *actor = zactor_new (device_actor, (void*)name);
+    zactor_t *actor = zactor_new (resource_actor, (void*)name);
     assert(actor);
     while(!zsys_interrupted) { sleep(1);};
     printf("[%s] main loop interrupted!\n", name);
